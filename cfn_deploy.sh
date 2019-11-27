@@ -28,6 +28,7 @@ function usage(){
     --help          Show this Help
 
   OPTIONS
+    -c      ALWAYS COMMIT
     -n      set STACKNAME
     -u      set GITURL
     -p      set AWS_PROFILE
@@ -140,6 +141,7 @@ function update_from_git(){
     # for this function, git is a requirement
     command -v git || error "git not installed"
 
+    [ -z "${GITURL}" ] && export GITURL="."
     branch=$(git_parameter "branch" "master" "${GITURL}")
     commit=$(git_parameter "commit" "" "${GITURL}")
 
@@ -402,6 +404,7 @@ function deploy(){
     # exit on error
     trap error ERR
 
+    configure_build || return 1
 
     # output account used in this deployment
     account
@@ -633,7 +636,6 @@ function set_defaults(){
     )
     [ ! -z "${SCRIPTPATH}" ] && export SCRIPTPATH="${SCRIPTPATH}" || return 1
 
-    configure_build || return 1
 
     # Optional. If environment file is passed, load variables from file
     if [ ! -z "${ENVIRONMENT_FILE}" ];then
@@ -714,15 +716,29 @@ fi
 
 case "${action}" in
     --deploy)   # if GITURL is used, fetch and checkout repository, update TEMPLATE_FILE
-                [ ! -z "${GITURL}" ] && update_from_git || error "Repository pull failed"
+                #[ ! -z "${GITURL}" ] && 
+                #[ ! -z "${AUTOCOMMIT}" ] && update_from_git || error "Repository pull failed"
+                update_from_git
                 deploy;;
-    --commit_deploy)
-                [ -z "${GITURL}" ] && export GITURL="."
-                git_auto_commit \
-                && update_from_git \
-                && deploy;;
-    --commit)   git_auto_commit;;
-    --checkout) update_from_git;;
+    #--commit_deploy)
+    #            git_auto_commit \
+    #            && update_from_git \
+    #            && deploy;;
+    #--commit)   git_auto_commit;;
+    --checkout) 
+                if [ ! -z "${GITURL}" ] && [ ! -d ".git" ];then
+                    git init \
+                    && git checkout -b trunk \
+                    && git remote add origin "${GITURL}" \
+                    && git fetch \
+                    && git_auto_commit \
+                    && git checkout master \
+                    && git merge trunk \
+                            --allow-unrelated-histories \
+                            -m "__auto_update__:$(date +%s)"
+                fi
+                #update_from_git;;
+                ;;
     --delete)   delete_application;;
     --delete_all)
                 delete_application \
