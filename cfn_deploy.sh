@@ -129,6 +129,17 @@ function git_parameter(){
     return 0
 }
 
+function git_namestring(){
+
+    branch=$(git_parameter "branch" "master" "${REPOSITORY}")
+    commit=$(git_parameter "commit" "" "${REPOSITORY}")
+
+    repository_url=$(echo "${REPOSITORY}" |sed 's/?.*//g')
+    repository_name=$(git_destination "${repository_url}") || return 1
+
+    echo "nstr="${repository_name}-${
+}
+
 function git_auto_commit(){
     # commit all changes automatically
     [ ! -d ".git" ] && return 1
@@ -686,8 +697,11 @@ function set_defaults(){
     # copy from CLI if set earlier -- this has precedence over ENVIRONMENT_FILE
     [ ! -z "${_STACKNAME}" ] && export STACKNAME="${_STACKNAME}"
     [ ! -z "${_AWS_PROFILE}" ] && export AWS_PROFILE="${_AWS_PROFILE}"
-    [ ! -z "${_AWS_DEFAULT_REGION}" ] && export AWS_DEFAULT_REGION="${_AWS_DEFAULT_REGION}"
+    [ ! -z "${_AWS_DEFAULT_REGION}" ] \
+        && export AWS_DEFAULT_REGION="${_AWS_DEFAULT_REGION}"
 
+    echo URL=${REPOSITORY}==
+    exit 1
     # TEMPLATE_FILE: main template called to run (main) rootstack
     # default: path lookup from current scriptpath (./ -- where this script runs)
     # when REPOSITORY is definied: path is ./build/current/${TEMPLATE_FILE}
@@ -696,6 +710,7 @@ function set_defaults(){
     # STACKNAME set in environment file, defaults to basename of scriptpath
     # additional processing to ensure compatibility with AWS Stack naming scheme
     if [ -z "${STACKNAME}" ];then
+        # generate 
         export STACKNAME=$(process_stackname "$(basename "${SCRIPTPATH}")")
     else
         export STACKNAME=$(process_stackname "${STACKNAME}")
