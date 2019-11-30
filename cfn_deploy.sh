@@ -17,23 +17,27 @@ function usage(){
   Notes
     ${PROGNAME} deploy a CloudFormation stack on AWS.
   Usage:
-    command:    ${PROGNAME} <ACTION> [OPTIONS]
+    command:    ${PROGNAME} <ACTION> [<REPOSITORY>] [OPTIONS]
 
   ACTIONS
-    --deploy        Deploy or Update Application Stack
-    --delete        Delete Application Stack
-    --delete_all    Delete Configuration- and Application Stack
-    --status        Retrieve Status of Application Stack
-    --validate_account      
-                    Validate Configured Account
-    --help          Show this Help
+    --deploy    <REPOSITORY>    Deploy or Update Application Stack
+    --delete    <REPOSITORY>    Delete Application Stack
+    --checkout  <REPOSITORY>    Checkout GIT repository, or init new
+                                if argument passed is "."
+    --status    <REPOSITORY>    Retrieve Status of Application Stack
+
+    --deploy_configuration      Deploy Configuration Stack
+    --delete_configuration      Delete Configuration Stack
+    --validate_account          Validate Configured Account
+    --help                      Show this Help
 
   OPTIONS
-    -c      ALWAYS COMMIT
-    -n      set STACKNAME
+    -f  <ENVIRONMENT_FILE>
+            set OPTIONS via ENVIRONMENT_FILE
     -p      set AWS_PROFILE
     -r      set AWS_DEFAULT_REGION
-    -f      set ENVIRONMENT_FILE
+    -c      auto commit before --deploy or --checkout
+    -n      set STACKNAME
 
   ENVIRONMENT_FILE
     Optional file. All variables are retrieved from environment and
@@ -637,11 +641,12 @@ function parse_opts(){
     done
 
     # extract valid options
-    while getopts "n:u:p:r:f:" opt;do
+    while getopts "n:p:r:c:f:" opt;do
         case "$opt" in
             n) export _STACKNAME="$OPTARG";;
             p) export _AWS_PROFILE="$OPTARG";;
             r) export _AWS_DEFAULT_REGION="$OPTARG";;
+            c) export AUTO_COMMIT=true;;
             f) export ENVIRONMENT_FILE="$OPTARG";;
             *)  usage; exit 1;;
         esac
@@ -680,7 +685,6 @@ function set_defaults(){
 
     # copy from CLI if set earlier -- this has precedence over ENVIRONMENT_FILE
     [ ! -z "${_STACKNAME}" ] && export STACKNAME="${_STACKNAME}"
-    #[ ! -z "${_REPOSITORY}" ] && export REPOSITORY="${_REPOSITORY}"
     [ ! -z "${_AWS_PROFILE}" ] && export AWS_PROFILE="${_AWS_PROFILE}"
     [ ! -z "${_AWS_DEFAULT_REGION}" ] && export AWS_DEFAULT_REGION="${_AWS_DEFAULT_REGION}"
 
