@@ -8,8 +8,8 @@
 # --------------------------------------------------------------------#
 set -x -e -o pipefail
 
-# base script dependencies -- if GITURL is used, git is also required
-DEPENDENCIES="aws jq sed awk date basename"
+# base script dependencies
+DEPENDENCIES="aws git jq sed awk date basename"
 PROGNAME="cfn_deploy.sh"
 
 function usage(){
@@ -24,13 +24,13 @@ function usage(){
     --delete        Delete Application Stack
     --delete_all    Delete Configuration- and Application Stack
     --status        Retrieve Status of Application Stack
-    --account       Check Configured Account
+    --validate_account      
+                    Validate Configured Account
     --help          Show this Help
 
   OPTIONS
     -c      ALWAYS COMMIT
     -n      set STACKNAME
-    -u      set GITURL
     -p      set AWS_PROFILE
     -r      set AWS_DEFAULT_REGION
     -f      set ENVIRONMENT_FILE
@@ -129,34 +129,30 @@ function git_auto_commit(){
     # commit all changes automatically
     [ ! -d ".git" ] && return 1
     git add . \
-    && (
-        git diff-index --quiet HEAD \
-        || git commit -am "__auto_update__:$(date +%s)"
-    )
+        && (
+            git diff-index --quiet HEAD \
+            || git commit -am "__auto_update__:$(date +%s)"
+        )
     return $?
 }
 
 function update_from_git(){
     # Fetch repository and checkout to specified branch tag/commit
-    # for this function, git is a requirement
-    command -v git || error "git not installed"
+    branch=$(git_parameter "branch" "master" "${REPOSITORY}")
+    commit=$(git_parameter "commit" "" "${REPOSITORY}")
 
-    [ -z "${GITURL}" ] && export GITURL="."
-    branch=$(git_parameter "branch" "master" "${GITURL}")
-    commit=$(git_parameter "commit" "" "${GITURL}")
-
-    repository_url=$(echo "${GITURL}" |sed 's/?.*//g')
+    repository_url=$(echo "${REPOSITORY}" |sed 's/?.*//g')
     repository_name=$(git_destination "${repository_url}") || return 1
     destination="./build/${repository_name}"
 
     # fetch if exist or clone if new
     (
         [ -e "${destination}/.git" ] \
-        &&  (
-                cd "${destination}" && git fetch
-            ) \
-        || git clone -b "${branch}" "${repository_url}" "${destination}" \
-        || return 1
+            &&  (
+                    cd "${destination}" && git fetch
+                ) \
+            || git clone -b "${branch}" "${repository_url}" "${destination}" \
+            || return 1
     )
 
     # move to correct position in GIT repository
@@ -164,16 +160,16 @@ function update_from_git(){
         # point to given branch commit/tag 
         (
             cd "${destination}" \
-            && git checkout -B ${branch} ${commit} \
-            || return 1
+                && git checkout -B ${branch} ${commit} \
+                || return 1
         )
     else
         # point to latest in branch
         (
             cd "${destination}" \
-            && git checkout -B ${branch} \
-            && git pull \
-            || return 1
+                && git checkout -B ${branch} \
+                && git pull \
+                || return 1
         )
     fi
 
@@ -188,12 +184,12 @@ function update_from_git(){
 
 function get_bucket(){
     # Return Name of S3 bucket deployed by RootStack
-    stackname="$1"
+    stackname="${1}"
     response=$(
         aws cloudformation describe-stacks ${PROFILE_STR} \
-        --stack-name "${stackname}" \
-        --query 'Stacks[0].Outputs[?OutputKey==`S3BucketName`].OutputValue' \
-        --output text 2>/dev/null
+            --stack-name "${stackname}" \
+            --query 'Stacks[0].Outputs[?OutputKey==`S3BucketName`].OutputValue' \
+            --output text 2>/dev/null
     )
     [ ! -z "${response}" ] && echo "${response}"
     return $?
@@ -202,12 +198,12 @@ function get_bucket(){
 function get_bucket_url(){
     # Return URL of S3 bucket deployed by RootStack
     # Bucket URL is used to reference the location of (nested) stacks
-    stackname="$1"
+    stackname="${1}"
     response=$(
         aws cloudformation describe-stacks ${PROFILE_STR} \
-        --stack-name "${stackname}" \
-        --query 'Stacks[0].Outputs[?OutputKey==`S3BucketSecureURL`].OutputValue' \
-        --output text 2>/dev/null
+            --stack-name "${stackname}" \
+            --query 'Stacks[0].Outputs[?OutputKey==`S3BucketSecureURL`].OutputValue' \
+            --output text 2>/dev/null
     )
     [ ! -z "${response}" ] && echo "${response}"
     return $?
@@ -215,7 +211,7 @@ function get_bucket_url(){
 
 function get_role_arn(){
     # Return ARN of Role deployed by RootStack
-    stackname="$1"
+    stackname="${1}"
     response=$(
         aws iam list-roles ${PROFILE_STR} \
         |jq -r '.Roles
@@ -224,18 +220,6 @@ function get_role_arn(){
              | .Arn'
     )
     [ ! -z "${response}" ] && echo "${response}"
-    return $?
-}
-
-function deploy_configuration(){
-    # Deploy Configuration-- typically contains S3 Bucket and IAM Role
-    stackname="$1"
-    aws cloudformation deploy ${PROFILE_STR} \
-        --no-fail-on-empty-changeset \
-        --template-file ./build/configuration_stack.yaml \
-        --capabilities CAPABILITY_NAMED_IAM \
-        --stack-name "${stackname}" \
-        --parameter-overrides StackName="${stackname}"
     return $?
 }
 
@@ -259,7 +243,7 @@ function process_stackname(){
     return $?
 }
 
-function account(){
+function validate_account(){
     # --account Verify account used to deploy or delete
     # exit on error
     trap error ERR
@@ -308,10 +292,10 @@ function delete_application(){
     trap error ERR
 
     # output account used in this deployment
-    account
+    validate_account || return 1
 
     configuration_stack="${STACKNAME}-Configuration"
-    application_stack="${STACKNAME}-Main"
+    application_stack="${STACKNAME}-Application"
 
     # Retrieve key items created by the configuration stack
     role_arn=$(get_role_arn "${configuration_stack}")
@@ -334,7 +318,7 @@ function delete_configuration(){
     trap error ERR
 
     # output account used in this deployment
-    account
+    validate_account || return 1
 
     configuration_stack="${STACKNAME}-Configuration"
     application_stack="${STACKNAME}-Main"
@@ -366,7 +350,7 @@ function status(){
     trap error ERR
 
     # output account used in this deployment
-    account
+    validate_account || return 1
 
     configuration_stack="${STACKNAME}-Configuration"
     main_stack="${STACKNAME}-Main"
@@ -399,39 +383,50 @@ function status(){
     return 0
 }
 
-function deploy(){
-    # --deploy  Deploy or Update stack
+function deploy_configuration(){
+    # --deploy_configuration    Deploy Configuration Stack
     # exit on error
     trap error ERR
 
-    configure_build || return 1
-
     # output account used in this deployment
-    account
+    validate_account || return 1
 
-    # Ensure current path is correct -- relative paths are used in this function
+    template_name="configuration_stack.yaml"
+    create_configuration_template "${template_name}" || return 1
+
+    # validate path
     cd "${SCRIPTPATH}" || return 1
 
-    configuration_stack="${STACKNAME}-Configuration"
-    main_stack="${STACKNAME}-Main"
+    # deploy configuration stack -- S3 Bucket, IAM Role
+    stackname="${STACKNAME}-Configuration"
+    aws cloudformation deploy ${PROFILE_STR} \
+        --no-fail-on-empty-changeset \
+        --template-file "./build/${template_name}" \
+        --capabilities CAPABILITY_NAMED_IAM \
+        --stack-name "${stackname}" \
+        --parameter-overrides StackName="${stackname}"
+    return $?
+}
 
-    # deploy configuration stack (includes S3 Bucket, CloudFormation Role)
-    deploy_configuration "${configuration_stack}"
-
+function deploy(){
     # Retrieve key items created by the configuration stack
-    bucket=$(get_bucket "${configuration_stack}")
-    bucket_url=$(get_bucket_url "${configuration_stack}")
-    role_arn=$(get_role_arn "${configuration_stack}")
 
-    srcdir=""
+    configuration_stack="${STACKNAME}-Configuration"
+    application_stack="${STACKNAME}-Application"
+
+    # get configuration -- or deploy configuration and retry
+    bucket=$(get_bucket "${configuration_stack}") \
+        && bucket_url=$(get_bucket_url "${configuration_stack}") \
+        && role_arn=$(get_role_arn "${configuration_stack}") \
+        || deploy_configuration \
+            && bucket=$(get_bucket "${configuration_stack}") \
+            && bucket_url=$(get_bucket_url "${configuration_stack}") \
+            && role_arn=$(get_role_arn "${configuration_stack}") \
+            || return 1
+
     appdir="app"
     appmain="main.yaml"
-
-    if [ -d "./build/current/${appdir}" ];then
-        srcdir="./build/current/${appdir}"
-    elif [ -d "./${appdir}" ];then
-        srcdir="./${appdir}"
-    fi
+    srcdir="./build/current/${appdir}"
 
     #export TEMPLATE_FILE="build/current/${TEMPLATE_FILE}"
     # Copy or update files in S3 bucket created by the configuration stack
@@ -444,7 +439,7 @@ function deploy(){
     aws cloudformation deploy ${PROFILE_STR} \
         --template-file "${srcdir}/${appmain}" \
         --role-arn "${role_arn}" \
-        --stack-name "${main_stack}" \
+        --stack-name "${application_stack}" \
         --capabilities CAPABILITY_IAM CAPABILITY_NAMED_IAM CAPABILITY_AUTO_EXPAND \
         --parameter-overrides \
             S3BucketName="${bucket}" \
@@ -455,7 +450,7 @@ function deploy(){
     # Get stackoutputs of MainStack -- allow jq to fail if none are found
     outputs=$(\
         aws cloudformation describe-stacks ${PROFILE_STR} \
-            --stack-name "${main_stack}" \
+            --stack-name "${application_stack}" \
         |(
             jq '.Stacks[0].Outputs[] | {"\(.OutputKey)": .OutputValue}' 2>/dev/null \
             || echo "{}"
@@ -471,27 +466,41 @@ function deploy(){
     return 0
 }
 
-function configure_build(){
-    # Ensure current path is correct -- relative paths are used in this function
+function create_buildpath(){
+    # Create ./build path and .gitignore
+
     cd "${SCRIPTPATH}" || return 1
 
-    # ensure build dir exist
     if [ ! -d "./build" ];then
         (
             mkdir -p "./build" \
             || return 1
         )
     fi
-    # ensure everything under ./build is ignored by git
+    # ensure files under ./build are ignored by git
     cat << IGNORE_FILE_BUILD >./build/.gitignore
 # ignore everything under build
 # build/* should only contain generated data
 # this file is auto-generated by ${PROGNAME}
 *
 IGNORE_FILE_BUILD
+    return $?
+}
+
+function create_configuration_template(){
+    # dump configuration template under ./build
+    template_name="${1}"
+
+    [ -z "${template_name}" ] && return 1
+
+    # ./build must exist
+    create_buildpath || return 1
+
+    # Validate path
+    cd "${SCRIPTPATH}" || return 1
 
     # add configuration stack template to ./build
-    cat << CONFIGURATION_STACK >./build/configuration_stack.yaml
+    cat << CONFIGURATION_STACK >./build/${template_name}
 AWSTemplateFormatVersion: 2010-09-09
 Description: ConfigurationStack
 Parameters:
@@ -614,13 +623,27 @@ function parse_opts(){
     # retrieve and parse extra arguments
     # store n,u,p and r as temporary vars to allow override after
     # CLI arguments take precedence over environment_file
+
+    # check if arguments follow a -${OPTION} ${VALUE} pattern
+    sequence=0
+    for param in $@;do
+        sequence=$((sequence+1))
+        [ "$((sequence%2))" -eq 0 ] && continue
+        echo "CHECKING=$param"
+        if [ ! "${param:0:1}" = "-" ];then
+            usage
+            exit 1
+        fi
+    done
+
+    # extract valid options
     while getopts "n:u:p:r:f:" opt;do
         case "$opt" in
             n) export _STACKNAME="$OPTARG";;
-            u) export _GITURL="$OPTARG";;
             p) export _AWS_PROFILE="$OPTARG";;
             r) export _AWS_DEFAULT_REGION="$OPTARG";;
             f) export ENVIRONMENT_FILE="$OPTARG";;
+            *)  usage; exit 1;;
         esac
     done
     return 0
@@ -647,7 +670,6 @@ function set_defaults(){
                 sed -n \
                     '/^AWS_[A-Z_]*=.*$/p;
                     /^STACKNAME=.*$/p;
-                    /^GITURL=.*$/p;
                     /^TEMPLATE_FILE=.*$/p' \
                 "${ENVIRONMENT_FILE}"
             )
@@ -658,13 +680,13 @@ function set_defaults(){
 
     # copy from CLI if set earlier -- this has precedence over ENVIRONMENT_FILE
     [ ! -z "${_STACKNAME}" ] && export STACKNAME="${_STACKNAME}"
-    [ ! -z "${_GITURL}" ] && export GITURL="${_GITURL}"
+    #[ ! -z "${_REPOSITORY}" ] && export REPOSITORY="${_REPOSITORY}"
     [ ! -z "${_AWS_PROFILE}" ] && export AWS_PROFILE="${_AWS_PROFILE}"
     [ ! -z "${_AWS_DEFAULT_REGION}" ] && export AWS_DEFAULT_REGION="${_AWS_DEFAULT_REGION}"
 
     # TEMPLATE_FILE: main template called to run (main) rootstack
     # default: path lookup from current scriptpath (./ -- where this script runs)
-    # when GITURL is definied: path is ./build/current/${TEMPLATE_FILE}
+    # when REPOSITORY is definied: path is ./build/current/${TEMPLATE_FILE}
     #[ -z "${TEMPLATE_FILE}" ] && export TEMPLATE_FILE="app/main.yaml"
 
     # STACKNAME set in environment file, defaults to basename of scriptpath
@@ -674,6 +696,8 @@ function set_defaults(){
     else
         export STACKNAME=$(process_stackname "${STACKNAME}")
     fi
+
+    # Add GIT branch to stackname
 
     # Copy AWS_DEFAULT_PROFILE TO AWS_PROFILE, if former exists and latter is unset
     if [ -z "${AWS_PROFILE}" ] && [ ! -z ${AWS_DEFAULT_PROFILE} ];then
@@ -707,44 +731,67 @@ check_dependencies
 
 # parse CLI arguments
 action="${1}"
-if [ ! -z "${action}" ];then
-    # ensure essential variables are set in environment
-    shift
-    parse_opts $@
-    set_defaults
+
+if [ -z "${action}" ];then
+    usage
+    exit 1
 fi
 
 case "${action}" in
-    --deploy)   # if GITURL is used, fetch and checkout repository, update TEMPLATE_FILE
-                #[ ! -z "${GITURL}" ] && 
-                #[ ! -z "${AUTOCOMMIT}" ] && update_from_git || error "Repository pull failed"
-                update_from_git
-                deploy;;
-    #--commit_deploy)
-    #            git_auto_commit \
-    #            && update_from_git \
-    #            && deploy;;
-    #--commit)   git_auto_commit;;
-    --checkout) 
-                if [ ! -z "${GITURL}" ] && [ ! -d ".git" ];then
-                    git init \
-                    && git checkout -b trunk \
-                    && git remote add origin "${GITURL}" \
-                    && git fetch \
-                    && git_auto_commit \
-                    && git checkout master \
-                    && git merge trunk \
-                            --allow-unrelated-histories \
-                            -m "__auto_update__:$(date +%s)"
-                fi
-                #update_from_git;;
+    --deploy|--delete|--checkout)
+        # repository (url, directory) expected -- defaults to "."
+        shift
+        repository="${1}"
+
+        # empty or "-" are invalid invalid, likely an input error
+        if [ -z "${repository}" ] || [ "${repository:0:1}" = "-" ];then
+            usage
+            exit 1
+        fi
+        # for all other input, assume repository input is valid 
+        # nothing bad happens if its not
+        export REPOSITORY="${repository}"
+        ;;
+esac
+
+
+# ensure essential variables are set in environment
+shift
+parse_opts $@
+set_defaults
+
+case "${action}" in
+    --deploy)   update_from_git \
+                    && deploy
                 ;;
-    --delete)   delete_application;;
-    --delete_all)
-                delete_application \
-                && delete_configuration;;
+    --checkout) 
+                if [ -d ".git" ];then
+                    echo "Skipping, .git already exists!"
+                elif [ "${repository}" = "." ];then
+                    git init
+                else
+                    git init \
+                        && git checkout -b trunk \
+                        && git remote add origin "${REPOSITORY}" \
+                        && git fetch \
+                        && git_auto_commit \
+                        && git checkout master \
+                        && git merge trunk \
+                                --allow-unrelated-histories \
+                                -m "__auto_update__:$(date +%s)"
+                fi
+                ;;
+    --delete)   delete_application
+                # -a == then delete_configuration
+                ;;
+    --deploy_configuration)
+                # name tied to stack-/ dirname
+                deploy_configuration;;
+    --delete_configuration)
+                # name tied to stack-/ dirname
+                delete_configuration;;
     --status)   status;;
-    --account)  account;;
+    --validate_account)  validate_account;;
     --help)     usage;;
     *)  usage;;
 esac
