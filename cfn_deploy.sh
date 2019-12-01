@@ -94,7 +94,7 @@ function git_destination(){
         return 0
     elif [ "${base}" = "." ];then
         # GIT Repo is current directory
-        echo "${STACKNAME}"
+        echo "$(basename "${SCRIPTPATH}")"
         return 0
     fi
     return 1
@@ -108,9 +108,11 @@ function git_parameter(){
     parameter_value=""
 
     # filter parameter string from url
+    # for OSX compatibility: dont use: \|
     parameter_str=$(
         basename "${url}" \
-        |sed 's/?\|$/__/g;
+        |sed 's/?/__/g;
+              s/$/__/g;
               s/\(__[-a-zA-Z0-9=&]*__\)/__\1/g;' \
         |sed -n 's;.*\(__.*__\);\1;p'
     )
@@ -130,14 +132,15 @@ function git_parameter(){
 }
 
 function git_namestring(){
-
+    # Return a string containing Repository Name, Branch and Commit
     branch=$(git_parameter "branch" "master" "${REPOSITORY}")
-    commit=$(git_parameter "commit" "" "${REPOSITORY}")
+    commit=$(git_parameter "commit" "latest" "${REPOSITORY}")
 
     repository_url=$(echo "${REPOSITORY}" |sed 's/?.*//g')
     repository_name=$(git_destination "${repository_url}") || return 1
 
-    echo "nstr="${repository_name}-${
+    echo "${repository_name}-${branch}-${commit}"
+    return $?
 }
 
 function git_auto_commit(){
@@ -228,11 +231,10 @@ function get_role_arn(){
     # Return ARN of Role deployed by RootStack
     stackname="${1}"
     response=$(
-        aws iam list-roles ${PROFILE_STR} \
-        |jq -r '.Roles
-             | .[]
-             | select(.RoleName=="'${stackname}'-ServiceRoleForCloudFormation")
-             | .Arn'
+        aws cloudformation describe-stacks ${PROFILE_STR} \
+            --stack-name "${stackname}" \
+            --query 'Stacks[0].Outputs[?OutputKey==`IAMServiceRole`].OutputValue' \
+            --output text 2>/dev/null
     )
     [ ! -z "${response}" ] && echo "${response}"
     return $?
@@ -241,20 +243,20 @@ function get_role_arn(){
 function process_stackname(){
     # (Re-)Format to CloudFormation compatible stack names
     # [a-zA-Z-], remove leading/ trailing dash, uppercase first char (just cosmetics)
-    STACKNAME=$(
+    stackname=$(
         echo ${1} \
         |sed 's/[^a-zA-Z0-9-]/-/g;s/-\+/-/g;s/^-\|-$//g' \
         |awk '{for (i=1;i<=NF;i++) $i=toupper(substr($i,1,1)) substr($i,2)} 1'
     )
 
-    if [ "${#STACKNAME}" -lt 1 ];then
+    if [ "${#stackname}" -lt 1 ];then
         # this should never happen, but if name is empty default to Unknown
-        STACKNAME="Unknown"
-    elif [ "${#STACKNAME}" -gt 64 ];then
+        stackname="Unknown"
+    elif [ "${#stackname}" -gt 64 ];then
         # shorten name, and remove possible new leading/ trailing dashes
-        STACKNAME=$(echo ${STACKNAME:0:64} |sed s'/^-\|-$//g')
+        stackname=$(echo ${stackname:0:64} |sed s'/^-\|-$//g')
     fi
-    [ ! -z "${STACKNAME}" ] && echo ${STACKNAME}
+    [ ! -z "${stackname}" ] && echo ${stackname}
     return $?
 }
 
@@ -309,8 +311,8 @@ function delete_application(){
     # output account used in this deployment
     validate_account || return 1
 
-    configuration_stack="${STACKNAME}-Configuration"
-    application_stack="${STACKNAME}-Application"
+    configuration_stack="${CONFIGURATION_STACKNAME}-Configuration"
+    application_stack="${APPLICATION_STACKNAME}-Application"
 
     # Retrieve key items created by the configuration stack
     role_arn=$(get_role_arn "${configuration_stack}")
@@ -335,8 +337,8 @@ function delete_configuration(){
     # output account used in this deployment
     validate_account || return 1
 
-    configuration_stack="${STACKNAME}-Configuration"
-    application_stack="${STACKNAME}-Main"
+    configuration_stack="${CONFIGURATION_STACKNAME}-Configuration"
+    application_stack="${APPLICATION_STACKNAME}-Main"
 
     # Check if configuration_stack exists, if not -- nothing to delete
     outputs=$(aws cloudformation describe-stacks ${PROFILE_STR} \
@@ -367,8 +369,8 @@ function status(){
     # output account used in this deployment
     validate_account || return 1
 
-    configuration_stack="${STACKNAME}-Configuration"
-    main_stack="${STACKNAME}-Main"
+    configuration_stack="${CONFIGURATION_STACKNAME}-Configuration"
+    main_stack="${APPLICATION_STACKNAME}-Main"
 
     outputs=$(aws sts get-caller-identity ${PROFILE_STR})
 
@@ -413,7 +415,7 @@ function deploy_configuration(){
     cd "${SCRIPTPATH}" || return 1
 
     # deploy configuration stack -- S3 Bucket, IAM Role
-    stackname="${STACKNAME}-Configuration"
+    stackname="${CONFIGURATION_STACKNAME}-Configuration"
     aws cloudformation deploy ${PROFILE_STR} \
         --no-fail-on-empty-changeset \
         --template-file "./build/${template_name}" \
@@ -426,8 +428,8 @@ function deploy_configuration(){
 function deploy(){
     # Retrieve key items created by the configuration stack
 
-    configuration_stack="${STACKNAME}-Configuration"
-    application_stack="${STACKNAME}-Application"
+    configuration_stack="${CONFIGURATION_STACKNAME}-Configuration"
+    application_stack="${APPLICATION_STACKNAME}-Application"
 
     # get configuration -- or deploy configuration and retry
     bucket=$(get_bucket "${configuration_stack}") \
@@ -540,7 +542,6 @@ Resources:
   ServiceRoleForCloudFormation:
     Type: AWS::IAM::Role
     Properties:
-      RoleName: !Sub \${StackName}-ServiceRoleForCloudFormation
       AssumeRolePolicyDocument:
         Statement:
         - Effect: Allow
@@ -652,12 +653,13 @@ function parse_opts(){
     done
 
     # extract valid options
-    while getopts "n:p:r:c:f:" opt;do
+    while getopts "c:a:p:r:w:f:" opt;do
         case "$opt" in
-            n) export _STACKNAME="$OPTARG";;
+            c) export _CONFIGURATION_STACKNAME="$OPTARG";;
+            a) export _APPLICATION_STACKNAME="$OPTARG";;
             p) export _AWS_PROFILE="$OPTARG";;
             r) export _AWS_DEFAULT_REGION="$OPTARG";;
-            c) export AUTO_COMMIT=true;;
+            w) export AUTO_COMMIT=true;;
             f) export ENVIRONMENT_FILE="$OPTARG";;
             *)  usage; exit 1;;
         esac
@@ -685,7 +687,8 @@ function set_defaults(){
             export $(
                 sed -n \
                     '/^AWS_[A-Z_]*=.*$/p;
-                    /^STACKNAME=.*$/p;
+                    /^CONFIGURATION_STACKNAME=.*$/p;
+                    /^APPLICATION_STACKNAME=.*$/p;
                     /^TEMPLATE_FILE=.*$/p' \
                 "${ENVIRONMENT_FILE}"
             )
@@ -695,28 +698,31 @@ function set_defaults(){
     fi
 
     # copy from CLI if set earlier -- this has precedence over ENVIRONMENT_FILE
-    [ ! -z "${_STACKNAME}" ] && export STACKNAME="${_STACKNAME}"
     [ ! -z "${_AWS_PROFILE}" ] && export AWS_PROFILE="${_AWS_PROFILE}"
+    [ ! -z "${_CONFIGURATION_STACKNAME}" ] \
+        && export CONFIGURATION_STACKNAME="${_CONFIGURATION_STACKNAME}"
+    [ ! -z "${_APPLICATION_STACKNAME}" ] \
+        && export APPLICATION_STACKNAME="${_APPLICATION_STACKNAME}"
     [ ! -z "${_AWS_DEFAULT_REGION}" ] \
         && export AWS_DEFAULT_REGION="${_AWS_DEFAULT_REGION}"
 
-    echo URL=${REPOSITORY}==
-    exit 1
-    # TEMPLATE_FILE: main template called to run (main) rootstack
-    # default: path lookup from current scriptpath (./ -- where this script runs)
-    # when REPOSITORY is definied: path is ./build/current/${TEMPLATE_FILE}
-    #[ -z "${TEMPLATE_FILE}" ] && export TEMPLATE_FILE="app/main.yaml"
-
-    # STACKNAME set in environment file, defaults to basename of scriptpath
-    # additional processing to ensure compatibility with AWS Stack naming scheme
-    if [ -z "${STACKNAME}" ];then
-        # generate 
-        export STACKNAME=$(process_stackname "$(basename "${SCRIPTPATH}")")
-    else
-        export STACKNAME=$(process_stackname "${STACKNAME}")
+    if [ -z "${CONFIGURATION_STACKNAME}" ];then
+        # generate based on directory-name
+        export CONFIGURATION_STACKNAME="$(basename "${SCRIPTPATH}")"
     fi
 
-    # Add GIT branch to stackname
+    if [ -z "${APPLICATION_STACKNAME}" ];then
+        # generate based on directory-name
+        export APPLICATION_STACKNAME="$(basename "${SCRIPTPATH}")"
+        if [ ! -z "${REPOSITORY}" ];then
+            export APPLICATION_STACKNAME="$(git_namestring)"
+        else
+            export APPLICATION_STACKNAME="$(basename "${SCRIPTPATH}")"
+        fi
+    fi
+    # Ensure Stackname fits CloudFormation naming scheme
+    export CONFIGURATION_STACKNAME=$(process_stackname "${CONFIGURATION_STACKNAME}")
+    export APPLICATION_STACKNAME=$(process_stackname "${APPLICATION_STACKNAME}")
 
     # Copy AWS_DEFAULT_PROFILE TO AWS_PROFILE, if former exists and latter is unset
     if [ -z "${AWS_PROFILE}" ] && [ ! -z ${AWS_DEFAULT_PROFILE} ];then
