@@ -32,12 +32,13 @@ function usage(){
     --help                      Show this Help
 
   OPTIONS
-    -f  <ENVIRONMENT_FILE>
-            set OPTIONS via ENVIRONMENT_FILE
     -p      set AWS_PROFILE
     -r      set AWS_DEFAULT_REGION
-    -c      auto commit before --deploy or --checkout
-    -n      set STACKNAME
+    -w      auto commit before --deploy or --checkout
+    -f  <ENVIRONMENT_FILE>
+            set OPTIONS via ENVIRONMENT_FILE
+    -c      override CONFIGURATION_STACKNAME
+    -a      override APPLICATION_STACKNAME
 
   ENVIRONMENT_FILE
     Optional file. All variables are retrieved from environment and
@@ -151,6 +152,17 @@ function git_auto_commit(){
             git diff-index --quiet HEAD \
             || git commit -am "__auto_update__:$(date +%s)"
         )
+    return $?
+}
+    
+function validate_auto_commit(){
+    # commit existing work if option (-w) is set
+
+    # return with ok status if auto_commit is not set
+    [ -z "${AUTO_COMMIT}" ] \
+        ||  [ "${AUTO_COMMIT}" != "true" ]  \
+        && return 0
+    git_auto_commit
     return $?
 }
 
@@ -645,7 +657,6 @@ function parse_opts(){
     for param in $@;do
         sequence=$((sequence+1))
         [ "$((sequence%2))" -eq 0 ] && continue
-        echo "CHECKING=$param"
         if [ ! "${param:0:1}" = "-" ];then
             usage
             exit 1
@@ -653,13 +664,14 @@ function parse_opts(){
     done
 
     # extract valid options
-    while getopts "c:a:p:r:w:f:" opt;do
+    while getopts "c:a:p:r:f:w" opt;do
         case "$opt" in
-            c) export _CONFIGURATION_STACKNAME="$OPTARG";;
-            a) export _APPLICATION_STACKNAME="$OPTARG";;
-            p) export _AWS_PROFILE="$OPTARG";;
-            r) export _AWS_DEFAULT_REGION="$OPTARG";;
-            w) export AUTO_COMMIT=true;;
+            c)  export _CONFIGURATION_STACKNAME="$OPTARG";;
+            a)  export _APPLICATION_STACKNAME="$OPTARG";;
+            p)  export _AWS_PROFILE="$OPTARG";;
+            r)  export _AWS_DEFAULT_REGION="$OPTARG";;
+            w)  [ ! -z "${REPOSITORY}" ] && [ -d "${REPOSITORY}/.git" ] \
+                    && export AUTO_COMMIT="true";;
             f) export ENVIRONMENT_FILE="$OPTARG";;
             *)  usage; exit 1;;
         esac
@@ -786,38 +798,44 @@ parse_opts $@
 set_defaults
 
 case "${action}" in
-    --deploy)   update_from_git \
-                    && deploy
-                ;;
+    --deploy)
+        validate_auto_commit \
+            && update_from_git \
+            && deploy
+        ;;
     --checkout) 
-                if [ -d ".git" ];then
-                    echo "Skipping, .git already exists!"
-                elif [ "${repository}" = "." ];then
-                    git init
-                else
-                    git init \
-                        && git checkout -b trunk \
-                        && git remote add origin "${REPOSITORY}" \
-                        && git fetch \
-                        && git_auto_commit \
-                        && git checkout master \
-                        && git merge trunk \
-                                --allow-unrelated-histories \
-                                -m "__auto_update__:$(date +%s)"
-                fi
-                ;;
-    --delete)   delete_application
-                # -a == then delete_configuration
-                ;;
+        validate_auto_commit || exit 1
+        if [ ! -d ".git" ];then
+            if [ "${repository}" = "." ];then
+                git init
+            else
+                git init \
+                    && git checkout -b trunk \
+                    && git remote add origin "${REPOSITORY}" \
+                    && git fetch \
+                    && git_auto_commit \
+                    && git checkout master \
+                    && git merge trunk \
+                            --allow-unrelated-histories \
+                            -m "__auto_update__:$(date +%s)"
+            fi
+        fi
+        ;;
+    --delete)   
+        delete_application;;
     --deploy_configuration)
-                # name tied to stack-/ dirname
-                deploy_configuration;;
+        # name tied to stack-/ dirname
+        deploy_configuration;;
     --delete_configuration)
-                # name tied to stack-/ dirname
-                delete_configuration;;
-    --status)   status;;
-    --validate_account)  validate_account;;
-    --help)     usage;;
-    *)  usage;;
+        # name tied to stack-/ dirname
+        delete_configuration;;
+    --status)   
+        status;;
+    --validate_account)
+        validate_account;;
+    --help)     
+        usage;;
+    *)
+        usage;;
 esac
 exit $?
