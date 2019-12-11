@@ -147,6 +147,13 @@ function git_namestring(){
 function git_auto_commit(){
     # commit all changes automatically
     [ ! -d ".git" ] && return 1
+
+    git_username=$(git config user.name)
+    git_useremail=$(git config user.email)
+
+    [ -z "${git_username}" ] && git config user.name `whoami`
+    [ -z "${git_useremail}" ] && git config user.email `whoami`@localhost
+
     git add . \
         && (
             git diff-index --quiet HEAD \
@@ -806,6 +813,7 @@ case "${action}" in
     --checkout) 
         validate_auto_commit || exit 1
         if [ ! -d ".git" ];then
+            git config --global user.useConfigOnly true
             if [ "${repository}" = "." ];then
                 git init
             else
