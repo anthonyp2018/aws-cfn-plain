@@ -182,6 +182,9 @@ function update_from_git(){
     repository_name=$(git_destination "${repository_url}") || return 1
     destination="./build/${repository_name}"
 
+    # ./build must exist -- also includes creation of .gitignore
+    create_buildpath || return 1
+
     # fetch if exist or clone if new
     (
         [ -e "${destination}/.git" ] \
