@@ -186,39 +186,34 @@ function update_from_git(){
     create_buildpath || return 1
 
     # fetch if exist or clone if new
-    (
-        [ -e "${destination}/.git" ] \
-            &&  (
-                    cd "${destination}" && git fetch
-                ) \
-            || git clone -b "${branch}" "${repository_url}" "${destination}" \
-            || return 1
-    )
+    [ -e "${destination}/.git" ] \
+        &&  (
+                cd "${destination}" && git fetch
+            ) \
+        || git clone -b "${branch}" "${repository_url}" "${destination}" \
+        || return 1
 
     # move to correct position in GIT repository
     if [ ! -z "${commit}" ];then
         # point to given branch commit/tag 
-        (
-            cd "${destination}" \
-                && git checkout -B ${branch} ${commit} \
-                || return 1
-        )
+        cd "${destination}" \
+            && git checkout -B ${branch} ${commit} \
+            || return 1
     else
         # point to latest in branch
-        (
-            cd "${destination}" \
-                && git checkout -B ${branch} \
-                && git pull \
-                || return 1
-        )
+        cd "${destination}" \
+            && git checkout -B ${branch} \
+            && git pull \
+            || return 1
     fi
 
     # succesful install - update symlink
     [ -e "./build/current" ] \
-    &&  (
+        &&  (
             rm -f "./build/current" || return 1
         )
-    ln -sf "${repository_name}" "./build/current"
+    # Validate path
+    cd "${SCRIPTPATH}" && ln -sf "${repository_name}" "./build/current"
     return $?
 }
 
