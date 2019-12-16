@@ -9,7 +9,7 @@
 set -x -e -o pipefail
 
 # base script dependencies
-DEPENDENCIES="aws git jq sed awk date basename"
+DEPENDENCIES="aws git jq find sed awk date ln basename dirname"
 PROGNAME="cfn_deploy.sh"
 
 function usage(){
@@ -213,7 +213,7 @@ function update_from_git(){
             rm -f "./build/current" || return 1
         )
     # Validate path
-    cd "${SCRIPTPATH}" && ln -sf "${repository_name}" "./build/current"
+    cd "${SCRIPTPATH}" && ln -nsf "${repository_name}" "./build/current"
     return $?
 }
 
@@ -442,9 +442,39 @@ function deploy_configuration(){
     return $?
 }
 
+function sambuild(){
+    cd "${BUILDPATH}" || return 1
+
+    # ${DIRECTORY}/template.yaml to be a sam template
+    templates=$(find ./ -mindepth 2 -maxdepth 2 -name template.yaml)
+    [ -z "${templates}" ] && return 0
+
+    # sam is required if templates are found
+    command -v sam || error "sam cli not installed"
+
+    for template in ${templates};do
+        # build if newer file(s) exists
+        cd "${BUILDPATH}/$(dirname "${template}")" || return 1
+        newfiles=$(
+            [ -s .aws-sam/build/template.yaml ] \
+            && find . -path .aws-sam -prune -o -type f -newer .aws-sam/build/template.yaml \
+            || echo y
+        )
+        [ -z "${newfiles}" ] && continue
+        if [ -f __init__.py ];then
+            command -v pipenv || error "pipenv required for Python Packages"
+            pipenv lock -r >requirements.txt
+        fi
+        sam build -t template.yaml ${PROFILE_STR} || return 1
+    done
+
+    # return list of templates to signal sam templates are built
+    echo "${templates}"
+    return 0
+}
+
 function deploy(){
     # Retrieve key items created by the configuration stack
-
     configuration_stack="${CONFIGURATION_STACKNAME}-Configuration"
     application_stack="${APPLICATION_STACKNAME}-Application"
 
@@ -458,20 +488,42 @@ function deploy(){
             && role_arn=$(get_role_arn "${configuration_stack}") \
             || return 1
 
-    appdir="app"
-    appmain="main.yaml"
-    srcdir="./build/current/${appdir}"
+    [ ! -d "${BUILDPATH}/.aws-build" ] && mkdir -p "${BUILDPATH}/.aws-build"
 
-    #export TEMPLATE_FILE="build/current/${TEMPLATE_FILE}"
+    # build sam templates if present
+    templates=$(sambuild)
+
+    # ensure next commans are run from SCRIPTPATH
+    cd "${SCRIPTPATH}" || return 1
+
+    cfn_input_template="${BUILDPATH}/main.yaml"
+    cfn_build_template="${BUILDPATH}/.aws-build/main.yaml"
+
+    if [ -z "${templates}" ];then
+        # copy without modification
+        cp "${cfn_input_template}" "${cfn_build_template}"
+    else
+        # sam is required
+        command -v sam || error "sam cli not installed"
+
+        # sam packages application, uploads it to S3 and presents an updated main
+        sam package \
+            --template-file "${cfn_input_template}" \
+            --s3-bucket "${bucket}" \
+            --s3-prefix "sam" \
+            --output-template-file "${cfn_build_template}" \
+            ${PROFILE_STR}
+    fi
+
     # Copy or update files in S3 bucket created by the configuration stack
-    #./build/current \
     aws s3 sync ${PROFILE_STR} \
-        "${srcdir}" \
-        s3://"${bucket}/${appdir}"
+        "${BUILDPATH}" \
+        s3://"${bucket}/app" \
+        --exclude "*.aws-*"
 
-    # deploy main_stack
+    # deploy cloudformation application stack
     aws cloudformation deploy ${PROFILE_STR} \
-        --template-file "${srcdir}/${appmain}" \
+        --template-file "${cfn_build_template}" \
         --role-arn "${role_arn}" \
         --stack-name "${application_stack}" \
         --capabilities CAPABILITY_IAM CAPABILITY_NAMED_IAM CAPABILITY_AUTO_EXPAND \
@@ -694,6 +746,7 @@ function set_defaults(){
     )
     [ ! -z "${SCRIPTPATH}" ] && export SCRIPTPATH="${SCRIPTPATH}" || return 1
 
+    export BUILDPATH="${SCRIPTPATH}/build/current/app"
 
     # Optional. If environment file is passed, load variables from file
     if [ ! -z "${ENVIRONMENT_FILE}" ];then
