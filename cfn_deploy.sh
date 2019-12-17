@@ -55,7 +55,7 @@ function usage(){
     # name of template_file to be run in mainstack
     # default path lookup: current scriptpath; ./\${TEMPLATE_FILE}
     # if GITURL is defined: ./build/current/\${TEMPLATE_FILE}
-    TEMPLATE_FILE=app/main.yaml
+    TEMPLATE_FILE=stack/main.yaml
 
     # AWS_* PARAMETERS are all loaded as-is
     # check: https://docs.aws.amazon.com/\
@@ -446,18 +446,25 @@ function sambuild(){
     cd "${BUILDPATH}" || return 1
 
     # ${DIRECTORY}/template.yaml to be a sam template
-    templates=$(find ./ -mindepth 2 -maxdepth 2 -name template.yaml)
+    templates=$(find ./ -mindepth 2 -maxdepth 3 -name template.yaml)
     [ -z "${templates}" ] && return 0
 
     # sam is required if templates are found
     command -v sam || error "sam cli not installed"
 
+    # sam default template location -- dont change this
+    sam_template=".aws-sam/build/template.yaml"
+    bucket="${1}"
+
     for template in ${templates};do
         # build if newer file(s) exists
-        cd "${BUILDPATH}/$(dirname "${template}")" || return 1
+        template_dir="${BUILDPATH}/$(dirname "${template}")"
+
+        cd "${template_dir}" || return 1
         newfiles=$(
-            [ -s .aws-sam/build/template.yaml ] \
-            && find . -path .aws-sam -prune -o -type f -newer .aws-sam/build/template.yaml \
+            [ -s "${sam_template}" ] \
+            && [ -s packaged.yaml ] \
+            && find . -path .aws-sam -prune -o -type f -newer packaged.yaml \
             || echo y
         )
         [ -z "${newfiles}" ] && continue
@@ -466,6 +473,12 @@ function sambuild(){
             pipenv lock -r >requirements.txt
         fi
         sam build -t template.yaml ${PROFILE_STR} || return 1
+        sam package \
+            --template-file "${sam_template}" \
+            --s3-bucket "${bucket}" \
+            --s3-prefix "sam" \
+            --output-template-file "packaged.yaml" \
+            ${PROFILE_STR}
     done
 
     # return list of templates to signal sam templates are built
@@ -488,52 +501,33 @@ function deploy(){
             && role_arn=$(get_role_arn "${configuration_stack}") \
             || return 1
 
-    [ ! -d "${BUILDPATH}/.aws-build" ] && mkdir -p "${BUILDPATH}/.aws-build"
-
     # build sam templates if present
-    templates=$(sambuild)
+    templates=$(sambuild "${bucket}")
 
     # ensure next commans are run from SCRIPTPATH
     cd "${SCRIPTPATH}" || return 1
 
     cfn_input_template="${BUILDPATH}/main.yaml"
-    cfn_build_template="${BUILDPATH}/.aws-build/main.yaml"
-
-    if [ -z "${templates}" ];then
-        # copy without modification
-        cp "${cfn_input_template}" "${cfn_build_template}"
-    else
-        # sam is required
-        command -v sam || error "sam cli not installed"
-
-        # sam packages application, uploads it to S3 and presents an updated main
-        sam package \
-            --template-file "${cfn_input_template}" \
-            --s3-bucket "${bucket}" \
-            --s3-prefix "sam" \
-            --output-template-file "${cfn_build_template}" \
-            ${PROFILE_STR}
-    fi
 
     # Copy or update files in S3 bucket created by the configuration stack
     aws s3 sync ${PROFILE_STR} \
         "${BUILDPATH}" \
-        s3://"${bucket}/app" \
+        s3://"${bucket}/$(basename "${BUILDPATH}")" \
         --exclude "*.aws-*"
 
     # deploy cloudformation application stack
     aws cloudformation deploy ${PROFILE_STR} \
-        --template-file "${cfn_build_template}" \
+        --template-file "${cfn_input_template}" \
         --role-arn "${role_arn}" \
         --stack-name "${application_stack}" \
         --capabilities CAPABILITY_IAM CAPABILITY_NAMED_IAM CAPABILITY_AUTO_EXPAND \
         --parameter-overrides \
             S3BucketName="${bucket}" \
-            S3BucketSecureURL="${bucket_url}/app" \
+            S3BucketSecureURL="${bucket_url}/$(basename "${BUILDPATH}")" \
             IAMServiceRole="${role_arn}" \
             LastChange=`date +%Y%m%d%H%M%S`
 
-    # Get stackoutputs of MainStack -- allow jq to fail if none are found
+    # get stackoutputs of MainStack -- allow jq to fail if none are found
     outputs=$(\
         aws cloudformation describe-stacks ${PROFILE_STR} \
             --stack-name "${application_stack}" \
@@ -746,7 +740,7 @@ function set_defaults(){
     )
     [ ! -z "${SCRIPTPATH}" ] && export SCRIPTPATH="${SCRIPTPATH}" || return 1
 
-    export BUILDPATH="${SCRIPTPATH}/build/current/app"
+    export BUILDPATH="${SCRIPTPATH}/build/current/stack"
 
     # Optional. If environment file is passed, load variables from file
     if [ ! -z "${ENVIRONMENT_FILE}" ];then
