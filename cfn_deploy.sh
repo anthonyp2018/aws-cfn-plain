@@ -582,6 +582,7 @@ function create_configuration_template(){
     # add configuration stack template to ./build
     cat << CONFIGURATION_STACK >./build/${template_name}
 AWSTemplateFormatVersion: 2010-09-09
+Transform: AWS::Serverless-2016-10-31
 Description: ConfigurationStack
 Parameters:
   StackName:
@@ -621,29 +622,14 @@ Resources:
           - Effect: Allow
             Action: "*"
             Resource: "*"
-  BucketEmptyRole:
-    Type: AWS::IAM::Role
+  BucketEmptyLambda:
+    Type: AWS::Serverless::Function
     Properties:
-      AssumeRolePolicyDocument:
-        Statement:
-        - Effect: Allow
-          Principal:
-            Service:
-            - lambda.amazonaws.com
-          Action:
-          - sts:AssumeRole
+      Runtime: python3.7
+      Handler: index.handler
       Policies:
-      - PolicyName: WriteCloudwatchLogs
-        PolicyDocument:
-          Version: 2012-10-17
-          Statement:
-          - Effect: Allow
-            Action:
-            - logs:CreateLogGroup
-            - logs:CreateLogStream
-            - logs:PutLogEvents
-            Resource:
-            - arn:aws:logs:*:*:*
+      - Version: 2012-10-17
+        Statement:
           - Effect: Allow
             Action:
             - s3:List*
@@ -652,14 +638,7 @@ Resources:
             Resource:
             - !Sub \${Bucket.Arn}
             - !Sub \${Bucket.Arn}/*
-  BucketEmptyLambda:
-    Type: AWS::Lambda::Function
-    Properties:
-      Runtime: python3.7
-      Handler: index.handler
-      Role: !GetAtt BucketEmptyRole.Arn
-      Code:
-        ZipFile: |
+      InlineCode: |
           import boto3
           import cfnresponse
 
