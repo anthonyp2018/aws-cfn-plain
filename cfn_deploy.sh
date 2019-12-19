@@ -9,7 +9,7 @@
 set -x -e -o pipefail
 
 # base script dependencies
-DEPENDENCIES="aws git jq find sed awk date ln basename dirname"
+DEPENDENCIES="cat aws git jq find sed awk date ln basename dirname"
 PROGNAME="cfn_deploy.sh"
 
 function usage(){
@@ -540,8 +540,9 @@ function deploy(){
 
     # disable verbosity to get clean output
     set +x
-    echo "Finished succesfully! Outputs of MainStack:"
-    echo "${outputs}" | jq
+    echo "Finished successfully! Outputs of MainStack:"
+    outfile="${SCRIPTPATH}/build/current/stack-outputs.json"
+    echo "${outputs}" | jq '.' >"${outfile}" && cat "${outfile}"
     set -x
     return 0
 }
@@ -797,7 +798,7 @@ function check_dependencies(){
 # verify prerequisite tools first
 check_dependencies
 
-# parse CLI arguments
+# fir argument is action
 action="${1}"
 
 if [ -z "${action}" ];then
@@ -805,26 +806,28 @@ if [ -z "${action}" ];then
     exit 1
 fi
 
+# move to next argument
+shift
+
 case "${action}" in
     --deploy|--delete|--checkout)
-        # repository (url, directory) expected -- defaults to "."
-        shift
+        # repository (url, directory) expected -- if empty defaults to "."
         repository="${1}"
 
+        echo "$repository"
         # empty or "-" are invalid invalid, likely an input error
         if [ -z "${repository}" ] || [ "${repository:0:1}" = "-" ];then
-            usage
-            exit 1
+            # repository not given through argument -- default to current dir
+            repository="."
+        else
+            # repository given through argument -- add shift to account for it
+            shift
         fi
-        # for all other input, assume repository input is valid 
-        # nothing bad happens if its not
         export REPOSITORY="${repository}"
         ;;
 esac
 
-
 # ensure essential variables are set in environment
-shift
 parse_opts $@
 set_defaults
 
@@ -834,11 +837,11 @@ case "${action}" in
             && update_from_git \
             && deploy
         ;;
-    --checkout) 
+    --checkout|--init) 
         validate_auto_commit || exit 1
         if [ ! -d ".git" ];then
             git config --global user.useConfigOnly true
-            if [ "${repository}" = "." ];then
+            if [ "${repository}" = "." ] || [ "${action}" = "--init" ];then
                 git init
             else
                 git init \
